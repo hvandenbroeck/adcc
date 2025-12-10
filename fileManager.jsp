@@ -41,14 +41,14 @@
         response.addHeader("Content-Disposition", "attachment; filename=\"" + fileToDownload.getName() + "\"");
         
         FileInputStream fis = new FileInputStream(fileToDownload);
-        OutputStream out = response.getOutputStream();
+        OutputStream outStream = response.getOutputStream();
         byte[] buffer = new byte[BUFFER_SIZE];
         int bytesRead;
         while((bytesRead = fis.read(buffer)) != -1) {
-          out.write(buffer, 0, bytesRead);
+          outStream.write(buffer, 0, bytesRead);
         }
         fis.close();
-        out.flush();
+        outStream.flush();
         return;
       } catch(Exception e) {
         response.setContentType("text/html; charset=utf-8");
