@@ -32,17 +32,88 @@
   
   // Handle search functionality
   String searchQuery = request.getParameter("search");
+  String startDateStr = request.getParameter("startDate");
+  String endDateStr = request.getParameter("endDate");
   List<Map<String, Object>> searchResults = new ArrayList<Map<String, Object>>();
   boolean hasSearched = false;
+  boolean searchLimitReached = false;
+  int filesSearched = 0;
+  
+  // Parse date filters
+  Date startDate = null;
+  Date endDate = null;
+  java.text.SimpleDateFormat dateFormat = new java.text.SimpleDateFormat("yyyy-MM-dd");
+  
+  try {
+    if(startDateStr != null && !startDateStr.trim().isEmpty()) {
+      startDate = dateFormat.parse(startDateStr.trim());
+    }
+    if(endDateStr != null && !endDateStr.trim().isEmpty()) {
+      endDate = dateFormat.parse(endDateStr.trim());
+      // Set end date to end of day (23:59:59)
+      Calendar cal = Calendar.getInstance();
+      cal.setTime(endDate);
+      cal.set(Calendar.HOUR_OF_DAY, 23);
+      cal.set(Calendar.MINUTE, 59);
+      cal.set(Calendar.SECOND, 59);
+      cal.set(Calendar.MILLISECOND, 999);
+      endDate = cal.getTime();
+    }
+  } catch(Exception e) {
+    // Invalid date format, ignore filters
+    startDate = null;
+    endDate = null;
+  }
+  
+  // Search limits to prevent performance issues
+  final int MAX_RESULTS = 100;
+  final int MAX_FILES = 500;
+  final long MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+  final long SEARCH_TIMEOUT = 30000; // 30 seconds
   
   if(searchQuery != null && !searchQuery.trim().isEmpty() && currentDir.exists() && currentDir.isDirectory()) {
     hasSearched = true;
     searchQuery = searchQuery.trim();
     File[] filesToSearch = currentDir.listFiles();
+    long searchStartTime = System.currentTimeMillis();
     
     if(filesToSearch != null) {
       for(File file : filesToSearch) {
-        if(file.isFile()) {
+        // Check timeout
+        if(System.currentTimeMillis() - searchStartTime > SEARCH_TIMEOUT) {
+          searchLimitReached = true;
+          break;
+        }
+        
+        // Check file limit
+        if(filesSearched >= MAX_FILES) {
+          searchLimitReached = true;
+          break;
+        }
+        
+        // Check result limit
+        if(searchResults.size() >= MAX_RESULTS) {
+          searchLimitReached = true;
+          break;
+        }
+        
+        if(file.isFile() && file.length() <= MAX_FILE_SIZE) {
+          // Check date filter
+          long fileModified = file.lastModified();
+          boolean dateMatch = true;
+          
+          if(startDate != null && fileModified < startDate.getTime()) {
+            dateMatch = false;
+          }
+          if(endDate != null && fileModified > endDate.getTime()) {
+            dateMatch = false;
+          }
+          
+          if(!dateMatch) {
+            continue;
+          }
+          
+          filesSearched++;
           try {
             BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), "UTF-8"));
             String line;
@@ -56,6 +127,13 @@
                 result.put("line", lineNumber);
                 result.put("content", line);
                 searchResults.add(result);
+                
+                // Check result limit within file
+                if(searchResults.size() >= MAX_RESULTS) {
+                  searchLimitReached = true;
+                  reader.close();
+                  break;
+                }
               }
             }
             reader.close();
@@ -273,7 +351,13 @@
     }
     .search-form {
       display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .search-row {
+      display: flex;
       gap: 10px;
+      align-items: center;
     }
     .search-input {
       flex: 1;
@@ -283,9 +367,23 @@
       font-size: 14px;
       transition: border-color 0.2s;
     }
+    .date-input {
+      padding: 10px 15px;
+      border: 2px solid #ddd;
+      border-radius: 4px;
+      font-size: 14px;
+      transition: border-color 0.2s;
+      min-width: 150px;
+    }
+    .date-input:focus,
     .search-input:focus {
       outline: none;
       border-color: #00A758;
+    }
+    .date-label {
+      font-size: 13px;
+      color: #666;
+      white-space: nowrap;
     }
     .btn-search {
       background: #00A758;
@@ -380,8 +478,16 @@
         <h3>&#128269; Search in Current Folder</h3>
         <form method="get" action="fileManager.jsp" class="search-form">
           <input type="hidden" name="path" value="<%= requestedPath %>" />
-          <input type="text" name="search" class="search-input" placeholder="Enter search text..." value="<%= searchQuery != null ? searchQuery : "" %>" />
-          <button type="submit" class="btn-search">Search</button>
+          <div class="search-row">
+            <input type="text" name="search" class="search-input" placeholder="Enter search text..." value="<%= searchQuery != null ? searchQuery : "" %>" />
+            <button type="submit" class="btn-search">Search</button>
+          </div>
+          <div class="search-row">
+            <span class="date-label">From:</span>
+            <input type="date" name="startDate" class="date-input" value="<%= startDateStr != null ? startDateStr : "" %>" />
+            <span class="date-label">To:</span>
+            <input type="date" name="endDate" class="date-input" value="<%= endDateStr != null ? endDateStr : "" %>" />
+          </div>
         </form>
       </div>
       
@@ -392,6 +498,11 @@
       %>
       <div class="search-results">
         <h3>Search Results (<%= searchResults.size() %> match<%= searchResults.size() != 1 ? "es" : "" %> found for "<%= searchQuery %>")</h3>
+        <% if(searchLimitReached) { %>
+        <div style="background: #fff3cd; border: 1px solid #ffc107; padding: 10px; border-radius: 4px; margin-bottom: 15px; color: #856404;">
+          <strong>⚠ Search limit reached.</strong> Only showing first <%= searchResults.size() %> results. Try refining your search term.
+        </div>
+        <% } %>
         <%
           for(Map<String, Object> result : searchResults) {
             String fileName = (String)result.get("file");
