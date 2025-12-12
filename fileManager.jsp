@@ -1,6 +1,17 @@
 <%@ page session="false" pageEncoding="UTF-8" %><%@
   page import="java.io.*, java.util.*" %><%@
-  page import="java.net.URLEncoder" %><%
+  page import="java.net.URLEncoder" %>
+<%@ page import="com.neolane.fwk.xtk.JSPContext" %>
+  <%
+    JSPContext ctx = new JSPContext(request, this);
+    // Restore the context
+    ctx.loadContext();
+
+    if (!ctx.checkAuthentication(response))
+        return; // user has been redirected to the logon page
+  %>
+  
+  <%
 
   response.setContentType("text/html; charset=UTF-8");
   response.setCharacterEncoding("UTF-8");
@@ -299,6 +310,13 @@
       font-size: 13px;
       min-width: 80px;
     }
+    .date {
+      text-align: center;
+      color: #666;
+      font-size: 13px;
+      white-space: nowrap;
+      min-width: 130px;
+    }
     .actions {
       text-align: center;
     }
@@ -574,6 +592,7 @@
         <thead>
           <tr>
             <th>Name</th>
+            <th>Last Modified</th>
             <th>Size</th>
             <th>Actions</th>
           </tr>
@@ -592,7 +611,7 @@
               String encodedParent = URLEncoder.encode(parentPath, "UTF-8");
           %>
           <tr>
-            <td colspan="3">
+            <td colspan="4">
               <a href="fileManager.jsp?path=<%= encodedParent %>" class="file-name">
                 <span class="icon folder-icon">&#128193;</span>
                 <span>..</span>
@@ -625,6 +644,17 @@
                 <span><%= fileName %></span>
               </span>
               <%
+                }
+              %>
+            </td>
+            <td class="date">
+              <%
+                long lastModified = file.lastModified();
+                if(lastModified > 0) {
+                  java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm");
+                  out.print(sdf.format(new Date(lastModified)));
+                } else {
+                  out.print("—");
                 }
               %>
             </td>
