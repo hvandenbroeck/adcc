@@ -465,6 +465,17 @@
       font-weight: bold;
     }
   </style>
+  <script>
+    // Set locale to ensure Monday is first day of week for date inputs
+    if(document.addEventListener) {
+      document.addEventListener('DOMContentLoaded', function() {
+        var dateInputs = document.querySelectorAll('input[type="date"]');
+        for(var i = 0; i < dateInputs.length; i++) {
+          dateInputs[i].setAttribute('lang', 'en-GB');
+        }
+      });
+    }
+  </script>
 </head>
 <body>
   <div class="container">
@@ -502,9 +513,9 @@
           </div>
           <div class="search-row">
             <span class="date-label">From:</span>
-            <input type="date" name="startDate" class="date-input" value="<%= startDateStr != null ? startDateStr : "" %>" />
+            <input type="date" name="startDate" class="date-input" lang="en-GB" value="<%= startDateStr != null ? startDateStr : "" %>" />
             <span class="date-label">To:</span>
-            <input type="date" name="endDate" class="date-input" value="<%= endDateStr != null ? endDateStr : "" %>" />
+            <input type="date" name="endDate" class="date-input" lang="en-GB" value="<%= endDateStr != null ? endDateStr : "" %>" />
           </div>
         </form>
       </div>
