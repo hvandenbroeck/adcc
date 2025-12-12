@@ -1,8 +1,9 @@
-<%@ page session="false" %><%@
+<%@ page session="false" pageEncoding="UTF-8" %><%@
   page import="java.io.*, java.util.*" %><%@
   page import="java.net.URLEncoder" %><%
 
-  response.setContentType("text/html; charset=utf-8");
+  response.setContentType("text/html; charset=UTF-8");
+  response.setCharacterEncoding("UTF-8");
   response.addHeader("Pragma", "no-cache");
   response.addHeader("Cache-Control", "no-cache");
   response.setDateHeader("Expires", System.currentTimeMillis());
@@ -43,7 +44,7 @@
       for(File file : filesToSearch) {
         if(file.isFile()) {
           try {
-            BufferedReader reader = new BufferedReader(new FileReader(file));
+            BufferedReader reader = new BufferedReader(new InputStreamReader(new FileInputStream(file), "UTF-8"));
             String line;
             int lineNumber = 0;
             
@@ -97,6 +98,7 @@
 <html>
 <head>
   <meta charset="UTF-8">
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>File Manager - /data/</title>
   <style>
@@ -375,7 +377,7 @@
     <div class="content">
       <%-- Search Box --%>
       <div class="search-box">
-        <h3>🔍 Search in Current Folder</h3>
+        <h3>&#128269; Search in Current Folder</h3>
         <form method="get" action="fileManager.jsp" class="search-form">
           <input type="hidden" name="path" value="<%= requestedPath %>" />
           <input type="text" name="search" class="search-input" placeholder="Enter search text..." value="<%= searchQuery != null ? searchQuery : "" %>" />
@@ -409,7 +411,7 @@
         %>
         <div class="search-result-item">
           <div class="search-result-file">
-            <span>📄 <%= fileName %></span>
+            <span>&#128196; <%= fileName %></span>
             <a href="fileManager.jsp?path=<%= URLEncoder.encode(requestedPath, "UTF-8") %>&download=<%= encodedFileName %>" class="btn btn-download">Download</a>
           </div>
           <div class="search-result-line">Line <%= lineNum %></div>
@@ -481,7 +483,7 @@
           <tr>
             <td colspan="3">
               <a href="fileManager.jsp?path=<%= encodedParent %>" class="file-name">
-                <span class="icon folder-icon">📁</span>
+                <span class="icon folder-icon">&#128193;</span>
                 <span>..</span>
               </a>
             </td>
@@ -501,14 +503,14 @@
                 if(file.isDirectory()) {
               %>
               <a href="fileManager.jsp?path=<%= encodedPath %>" class="file-name">
-                <span class="icon folder-icon">📁</span>
+                <span class="icon folder-icon">&#128193;</span>
                 <span><%= fileName %></span>
               </a>
               <%
                 } else {
               %>
               <span class="file-name">
-                <span class="icon file-icon">📄</span>
+                <span class="icon file-icon">&#128196;</span>
                 <span><%= fileName %></span>
               </span>
               <%
