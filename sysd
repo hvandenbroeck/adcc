@@ -1,0 +1,17 @@
+cat > /etc/systemd/system/pipelined-fixup.service <<'EOF'
+[Unit]
+Description=Adobe Campaign pipelined CONNECT-bug fix-up proxy
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/pipelined-fixup-proxy.py
+Restart=always
+RestartSec=2
+DynamicUser=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now pipelined-fixup
