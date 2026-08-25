@@ -18,6 +18,7 @@
     const SP_SITE_URL = 'https://yourtenant.sharepoint.com/sites/YourSite';
     const SP_FOLDER_SERVER_RELATIVE_URL = '/sites/YourSite/Shared Documents/YourFolder';
     const DEBUG = false; // set true to log paste targets in the console while you find your selector
+    const IMAGE_WAIT_TIMEOUT_MS = 5000; // how long to wait for the browser/Rally to insert the pasted <img>
     // ================================================
 
     // ---------- Heuristic: is this element part of Rally's "Description" field? ----------
@@ -98,43 +99,45 @@
         return origin + data.d.ServerRelativeUrl;
     }
 
-    function insertImageAtCursor(doc, url, savedRange) {
-        const win = doc.defaultView || window;
-        const selection = doc.getSelection ? doc.getSelection() : win.getSelection();
-
-        // Restore the selection we captured before the async upload — it's very likely
-        // been lost/collapsed during the network round-trip.
-        if (savedRange && selection) {
-            selection.removeAllRanges();
-            selection.addRange(savedRange);
-        }
-
-        const ok = doc.execCommand && doc.execCommand('insertImage', false, url);
-        if (ok) return true;
-
-        // Fallback: insert the <img> manually via the Range API.
-        if (selection && selection.rangeCount > 0) {
-            const range = selection.getRangeAt(0);
-            const img = doc.createElement('img');
-            img.src = url;
-            range.deleteContents();
-            range.insertNode(img);
-            range.setStartAfter(img);
-            range.collapse(true);
-            selection.removeAllRanges();
-            selection.addRange(range);
-            return true;
-        }
-
-        console.warn('[SP Uploader] No selection/range available — could not insert image. The editor likely lost focus or was re-rendered during the upload.');
-        return false;
-    }
-
     function notify(message) {
         console.log('[SP Uploader]', message);
         if (typeof GM_notification === 'function') {
             GM_notification({ text: message, title: 'SharePoint Uploader', timeout: 3000 });
         }
+    }
+
+    // ---------- Wait for the browser/Rally to insert a new <img> after a paste ----------
+    // contentEditable regions natively insert an <img> (usually with a base64 data: src) when
+    // you paste an image — we don't need to build that ourselves, just find it once it lands.
+    function waitForNewImage(root, timeoutMs) {
+        return new Promise((resolve) => {
+            const existing = new Set(root.querySelectorAll('img'));
+            let settled = false;
+
+            const finish = (img) => {
+                if (settled) return;
+                settled = true;
+                observer.disconnect();
+                clearTimeout(timer);
+                resolve(img);
+            };
+
+            const observer = new MutationObserver((mutations) => {
+                for (const m of mutations) {
+                    for (const node of m.addedNodes) {
+                        if (node.nodeType !== 1) continue;
+                        const img = node.matches && node.matches('img') ? node : (node.querySelector && node.querySelector('img'));
+                        if (img && !existing.has(img)) {
+                            finish(img);
+                            return;
+                        }
+                    }
+                }
+            });
+            observer.observe(root, { childList: true, subtree: true });
+
+            const timer = setTimeout(() => finish(null), timeoutMs);
+        });
     }
 
     // ---------- Core paste handler ----------
@@ -159,34 +162,34 @@
         const imageItem = items.find((i) => i.type.startsWith('image/'));
         if (!imageItem) return; // not an image paste — let Rally handle it normally
 
-        event.preventDefault();
-        event.stopPropagation();
-
-        // Capture the current selection NOW, before the async upload — Rally's editor can
-        // lose focus/selection during the network round-trip, which is why the insert would
-        // otherwise silently do nothing.
-        const doc = target.ownerDocument;
-        const win = doc.defaultView || window;
-        const selection = doc.getSelection ? doc.getSelection() : win.getSelection();
-        const savedRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
-
+        // Deliberately NOT calling preventDefault() — we let the browser/Rally insert the
+        // image the normal way, then rewrite its src once the SharePoint upload is done.
         const file = imageItem.getAsFile();
+        const doc = target.ownerDocument;
+        const editableRoot = (target.closest && target.closest('[contenteditable="true"]')) || target;
+
+        // Set the watcher up synchronously, before control returns to the browser's default
+        // paste handling, so we can't miss the insertion.
+        const imagePromise = waitForNewImage(editableRoot, IMAGE_WAIT_TIMEOUT_MS);
+
         notify('Uploading pasted image to SharePoint…');
 
         try {
-            const url = await uploadImageToSharePoint(file);
+            const [img, url] = await Promise.all([imagePromise, uploadImageToSharePoint(file)]);
 
-            if (!doc.contains(target)) {
-                // The editor's DOM node is gone — Rally likely re-rendered the field while we
-                // were uploading. We can't insert automatically; hand the user the URL instead.
-                console.warn('[SP Uploader] Editor element was removed from the page during upload. URL:', url);
-                notify('Uploaded, but the editor changed — URL is in the console.');
+            if (!img) {
+                console.warn('[SP Uploader] No new <img> appeared after paste within ' + IMAGE_WAIT_TIMEOUT_MS + 'ms — this field may not support native image paste. Uploaded URL (not inserted):', url);
+                notify('Uploaded, but no image was found to update. URL is in the console.');
+                return;
+            }
+            if (!doc.contains(img)) {
+                console.warn('[SP Uploader] The inserted image was removed before the upload finished. Uploaded URL:', url);
+                notify('Uploaded, but the image was removed first. URL is in the console.');
                 return;
             }
 
-            target.focus();
-            const inserted = insertImageAtCursor(doc, url, savedRange);
-            notify(inserted ? 'Image uploaded — inserted remote link.' : 'Uploaded, but could not auto-insert — URL is in the console.');
+            img.src = url;
+            notify('Image uploaded — swapped in the SharePoint link.');
             console.log('[SP Uploader] Uploaded URL:', url);
         } catch (err) {
             console.error('[SP Uploader] Upload failed:', err);
