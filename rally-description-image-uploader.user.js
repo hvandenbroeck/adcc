@@ -18,7 +18,6 @@
     const SP_SITE_URL = 'https://yourtenant.sharepoint.com/sites/YourSite';
     const SP_FOLDER_SERVER_RELATIVE_URL = '/sites/YourSite/Shared Documents/YourFolder';
     const DEBUG = false; // set true to log paste targets in the console while you find your selector
-    const IMAGE_WAIT_TIMEOUT_MS = 5000; // how long to wait for the browser/Rally to insert the pasted <img>
     // ================================================
 
     // ---------- Heuristic: is this element part of Rally's "Description" field? ----------
@@ -106,38 +105,33 @@
         }
     }
 
-    // ---------- Wait for the browser/Rally to insert a new <img> after a paste ----------
-    // contentEditable regions natively insert an <img> (usually with a base64 data: src) when
-    // you paste an image — we don't need to build that ourselves, just find it once it lands.
-    function waitForNewImage(root, timeoutMs) {
-        return new Promise((resolve) => {
-            const existing = new Set(root.querySelectorAll('img'));
-            let settled = false;
+    // ---------- Insert via CKEditor 5's own command API ----------
+    // The dialog you captured is CKEditor 5 (all the ck-* classes). CKEditor 5 exposes the live
+    // editor instance directly on its editable DOM element as `.ckeditorInstance`, and inserting
+    // an image by URL is just editor.execute('insertImage', { source: url }) — the exact same
+    // thing that dialog's "Accept" button does internally. No clicking, no dialog, no races.
+    function getCkEditorInstance(el) {
+        let node = el;
+        while (node) {
+            if (node.ckeditorInstance) return node.ckeditorInstance;
+            node = node.parentElement;
+        }
+        return null;
+    }
 
-            const finish = (img) => {
-                if (settled) return;
-                settled = true;
-                observer.disconnect();
-                clearTimeout(timer);
-                resolve(img);
-            };
+    function insertImageViaCkEditor(fieldEl, imageUrl) {
+        const editor = getCkEditorInstance(fieldEl);
+        if (!editor) {
+            throw new Error('No .ckeditorInstance found on any ancestor of the pasted-into element — is this really CKEditor 5 here?');
+        }
 
-            const observer = new MutationObserver((mutations) => {
-                for (const m of mutations) {
-                    for (const node of m.addedNodes) {
-                        if (node.nodeType !== 1) continue;
-                        const img = node.matches && node.matches('img') ? node : (node.querySelector && node.querySelector('img'));
-                        if (img && !existing.has(img)) {
-                            finish(img);
-                            return;
-                        }
-                    }
-                }
-            });
-            observer.observe(root, { childList: true, subtree: true });
-
-            const timer = setTimeout(() => finish(null), timeoutMs);
-        });
+        const candidateCommands = ['insertImage', 'imageInsert'];
+        const commandName = candidateCommands.find((name) => editor.commands.get(name));
+        if (!commandName) {
+            console.warn('[SP Uploader] No known insert-image command found. Available commands:', [...editor.commands.names()]);
+            throw new Error('No insertImage/imageInsert command on this CKEditor instance — see console for the full command list');
+        }
+        editor.execute(commandName, { source: imageUrl });
     }
 
     // ---------- Core paste handler ----------
@@ -162,45 +156,23 @@
         const imageItem = items.find((i) => i.type.startsWith('image/'));
         if (!imageItem) return; // not an image paste — let Rally handle it normally
 
-        // Rally appears to have its own native "paste image → create attachment" handler on
-        // this field, which seems to fail its own file-extension validation (clipboard pastes
-        // have no filename) and may be racing with us to determine what actually gets saved.
-        // We block ONLY other JS listeners from seeing this event — NOT the browser's default
-        // action, which is what actually inserts the <img> we're waiting for below.
+        // Stop CKEditor's own default paste-image handling (its upload adapter is what's
+        // calling Rally's Attachment API and failing) and the browser's default insert — we're
+        // inserting directly via the editor's command API instead.
+        event.preventDefault();
         event.stopImmediatePropagation();
 
-        // Deliberately NOT calling preventDefault() — we let the browser/Rally insert the
-        // image the normal way, then rewrite its src once the SharePoint upload is done.
         const file = imageItem.getAsFile();
-        const doc = target.ownerDocument;
-        const editableRoot = (target.closest && target.closest('[contenteditable="true"]')) || target;
-
-        // Set the watcher up synchronously, before control returns to the browser's default
-        // paste handling, so we can't miss the insertion.
-        const imagePromise = waitForNewImage(editableRoot, IMAGE_WAIT_TIMEOUT_MS);
-
         notify('Uploading pasted image to SharePoint…');
 
         try {
-            const [img, url] = await Promise.all([imagePromise, uploadImageToSharePoint(file)]);
-
-            if (!img) {
-                console.warn('[SP Uploader] No new <img> appeared after paste within ' + IMAGE_WAIT_TIMEOUT_MS + 'ms — this field may not support native image paste. Uploaded URL (not inserted):', url);
-                notify('Uploaded, but no image was found to update. URL is in the console.');
-                return;
-            }
-            if (!doc.contains(img)) {
-                console.warn('[SP Uploader] The inserted image was removed before the upload finished. Uploaded URL:', url);
-                notify('Uploaded, but the image was removed first. URL is in the console.');
-                return;
-            }
-
-            img.src = url;
-            notify('Image uploaded — swapped in the SharePoint link.');
+            const url = await uploadImageToSharePoint(file);
+            insertImageViaCkEditor(target, url);
+            notify('Image uploaded and inserted.');
             console.log('[SP Uploader] Uploaded URL:', url);
         } catch (err) {
-            console.error('[SP Uploader] Upload failed:', err);
-            notify('Upload failed — see console for details.');
+            console.error('[SP Uploader] Failed:', err);
+            notify('Failed — see console for details.');
         }
     }
 
