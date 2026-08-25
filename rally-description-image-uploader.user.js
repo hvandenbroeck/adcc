@@ -98,8 +98,36 @@
         return origin + data.d.ServerRelativeUrl;
     }
 
-    function insertImageAtCursor(doc, url) {
-        doc.execCommand('insertImage', false, url);
+    function insertImageAtCursor(doc, url, savedRange) {
+        const win = doc.defaultView || window;
+        const selection = doc.getSelection ? doc.getSelection() : win.getSelection();
+
+        // Restore the selection we captured before the async upload — it's very likely
+        // been lost/collapsed during the network round-trip.
+        if (savedRange && selection) {
+            selection.removeAllRanges();
+            selection.addRange(savedRange);
+        }
+
+        const ok = doc.execCommand && doc.execCommand('insertImage', false, url);
+        if (ok) return true;
+
+        // Fallback: insert the <img> manually via the Range API.
+        if (selection && selection.rangeCount > 0) {
+            const range = selection.getRangeAt(0);
+            const img = doc.createElement('img');
+            img.src = url;
+            range.deleteContents();
+            range.insertNode(img);
+            range.setStartAfter(img);
+            range.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            return true;
+        }
+
+        console.warn('[SP Uploader] No selection/range available — could not insert image. The editor likely lost focus or was re-rendered during the upload.');
+        return false;
     }
 
     function notify(message) {
@@ -134,13 +162,31 @@
         event.preventDefault();
         event.stopPropagation();
 
+        // Capture the current selection NOW, before the async upload — Rally's editor can
+        // lose focus/selection during the network round-trip, which is why the insert would
+        // otherwise silently do nothing.
+        const doc = target.ownerDocument;
+        const win = doc.defaultView || window;
+        const selection = doc.getSelection ? doc.getSelection() : win.getSelection();
+        const savedRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
+
         const file = imageItem.getAsFile();
         notify('Uploading pasted image to SharePoint…');
 
         try {
             const url = await uploadImageToSharePoint(file);
-            insertImageAtCursor(target.ownerDocument, url);
-            notify('Image uploaded — inserted remote link.');
+
+            if (!doc.contains(target)) {
+                // The editor's DOM node is gone — Rally likely re-rendered the field while we
+                // were uploading. We can't insert automatically; hand the user the URL instead.
+                console.warn('[SP Uploader] Editor element was removed from the page during upload. URL:', url);
+                notify('Uploaded, but the editor changed — URL is in the console.');
+                return;
+            }
+
+            target.focus();
+            const inserted = insertImageAtCursor(doc, url, savedRange);
+            notify(inserted ? 'Image uploaded — inserted remote link.' : 'Uploaded, but could not auto-insert — URL is in the console.');
             console.log('[SP Uploader] Uploaded URL:', url);
         } catch (err) {
             console.error('[SP Uploader] Upload failed:', err);
