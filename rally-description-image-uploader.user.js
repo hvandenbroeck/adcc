@@ -162,6 +162,13 @@
         const imageItem = items.find((i) => i.type.startsWith('image/'));
         if (!imageItem) return; // not an image paste — let Rally handle it normally
 
+        // Rally appears to have its own native "paste image → create attachment" handler on
+        // this field, which seems to fail its own file-extension validation (clipboard pastes
+        // have no filename) and may be racing with us to determine what actually gets saved.
+        // We block ONLY other JS listeners from seeing this event — NOT the browser's default
+        // action, which is what actually inserts the <img> we're waiting for below.
+        event.stopImmediatePropagation();
+
         // Deliberately NOT calling preventDefault() — we let the browser/Rally insert the
         // image the normal way, then rewrite its src once the SharePoint upload is done.
         const file = imageItem.getAsFile();
