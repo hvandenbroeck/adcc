@@ -1,24 +1,117 @@
 // ==UserScript==
 // @name         Rally Description Image → SharePoint Uploader
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      2.0
 // @description  When an image is pasted into a Rally "Description" field, upload it to SharePoint and insert the remote URL as an inline image
 // @match        https://rallydev.com/*
 // @match        https://*.rallydev.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_notification
-// @connect      yourtenant.sharepoint.com
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_registerMenuCommand
+// @connect      sharepoint.com
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
     'use strict';
 
-    // ============ CONFIG — edit these ============
-    const SP_SITE_URL = 'https://yourtenant.sharepoint.com/sites/YourSite';
-    const SP_FOLDER_SERVER_RELATIVE_URL = '/sites/YourSite/Shared Documents/YourFolder';
+    // ============ CONFIG ============
     const DEBUG = false; // set true to log paste targets in the console while you find your selector
     // ================================================
+
+    const STORAGE_KEY_SITE = 'sp_site_url';
+    const STORAGE_KEY_FOLDER = 'sp_folder_relative_url';
+
+    // ---------- First-run setup dialog, backed by GM_setValue/GM_getValue ----------
+    function getStoredConfig() {
+        const siteUrl = GM_getValue(STORAGE_KEY_SITE, '');
+        const folderUrl = GM_getValue(STORAGE_KEY_FOLDER, '');
+        return siteUrl && folderUrl ? { siteUrl, folderUrl } : null;
+    }
+
+    function showConfigDialog(defaults) {
+        return new Promise((resolve) => {
+            const doc = document; // always shown in the top page, regardless of where the paste happened
+            const overlay = doc.createElement('div');
+            overlay.style.cssText =
+                'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:2147483647;' +
+                'display:flex;align-items:center;justify-content:center;font-family:sans-serif;';
+
+            const box = doc.createElement('div');
+            box.style.cssText =
+                'background:#fff;border-radius:8px;padding:24px;width:440px;max-width:90vw;' +
+                'box-shadow:0 10px 40px rgba(0,0,0,0.3);color:#222;';
+            box.innerHTML = `
+                <h2 style="margin:0 0 8px;font-size:16px;">SharePoint Image Uploader — Setup</h2>
+                <p style="margin:0 0 16px;font-size:13px;color:#555;line-height:1.4;">
+                    Enter this once — it's saved on this computer for future pastes.
+                </p>
+                <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">SharePoint site URL</label>
+                <input id="sp-cfg-site" type="text" placeholder="https://yourtenant.sharepoint.com/sites/YourSite"
+                    style="width:100%;padding:8px;margin-bottom:12px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+                <label style="display:block;font-size:12px;font-weight:600;margin-bottom:4px;">Folder (server-relative URL)</label>
+                <input id="sp-cfg-folder" type="text" placeholder="/sites/YourSite/Shared Documents/YourFolder"
+                    style="width:100%;padding:8px;margin-bottom:18px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;font-size:13px;">
+                <div style="text-align:right;">
+                    <button id="sp-cfg-cancel" type="button"
+                        style="padding:8px 14px;margin-right:8px;border:1px solid #ccc;background:#fff;border-radius:4px;cursor:pointer;font-size:13px;">Cancel</button>
+                    <button id="sp-cfg-save" type="button"
+                        style="padding:8px 14px;border:none;background:#0b5cab;color:#fff;border-radius:4px;cursor:pointer;font-size:13px;">Save</button>
+                </div>
+            `;
+            overlay.appendChild(box);
+            doc.body.appendChild(overlay);
+
+            const siteInput = box.querySelector('#sp-cfg-site');
+            const folderInput = box.querySelector('#sp-cfg-folder');
+            siteInput.value = (defaults && defaults.siteUrl) || '';
+            folderInput.value = (defaults && defaults.folderUrl) || '';
+            siteInput.focus();
+
+            const cleanup = () => overlay.remove();
+
+            box.querySelector('#sp-cfg-save').addEventListener('click', () => {
+                const siteUrl = siteInput.value.trim().replace(/\/+$/, '');
+                const folderUrl = folderInput.value.trim();
+                if (!siteUrl || !folderUrl) {
+                    alert('Both fields are required.');
+                    return;
+                }
+                GM_setValue(STORAGE_KEY_SITE, siteUrl);
+                GM_setValue(STORAGE_KEY_FOLDER, folderUrl);
+                cleanup();
+                resolve({ siteUrl, folderUrl });
+            });
+
+            box.querySelector('#sp-cfg-cancel').addEventListener('click', () => {
+                cleanup();
+                resolve(null);
+            });
+
+            overlay.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    cleanup();
+                    resolve(null);
+                }
+            });
+        });
+    }
+
+    // Returns the saved config, or shows the setup dialog if nothing's saved yet (or the
+    // person explicitly asked to reconfigure). Resolves to null if they cancel.
+    async function getConfig(forceDialog) {
+        if (!forceDialog) {
+            const stored = getStoredConfig();
+            if (stored) return stored;
+        }
+        return showConfigDialog(getStoredConfig());
+    }
+
+    if (typeof GM_registerMenuCommand === 'function') {
+        GM_registerMenuCommand('Configure SharePoint upload settings', () => getConfig(true));
+    }
 
     // ---------- Heuristic: is this element part of Rally's "Description" field? ----------
     // Adjust this once you've inspected your instance. Turn on DEBUG, paste an image into a
@@ -56,10 +149,10 @@
         });
     }
 
-    async function getRequestDigest() {
+    async function getRequestDigest(siteUrl) {
         const res = await gmRequest({
             method: 'POST',
-            url: `${SP_SITE_URL}/_api/contextinfo`,
+            url: `${siteUrl}/_api/contextinfo`,
             headers: { Accept: 'application/json;odata=verbose' }
         });
         let data;
@@ -71,11 +164,11 @@
         return data.d.GetContextWebInformation.FormDigestValue;
     }
 
-    async function uploadImageToSharePoint(file, fileName) {
+    async function uploadImageToSharePoint(file, siteUrl, folderUrl, fileName) {
         const name = fileName || `pasted-${Date.now()}.png`;
-        const digest = await getRequestDigest();
+        const digest = await getRequestDigest(siteUrl);
         const uploadUrl =
-            `${SP_SITE_URL}/_api/web/GetFolderByServerRelativeUrl('${encodeURIComponent(SP_FOLDER_SERVER_RELATIVE_URL)}')` +
+            `${siteUrl}/_api/web/GetFolderByServerRelativeUrl('${encodeURIComponent(folderUrl)}')` +
             `/Files/add(url='${encodeURIComponent(name)}',overwrite=true)`;
 
         const res = await gmRequest({
@@ -94,7 +187,7 @@
         } catch (e) {
             throw new Error('Upload succeeded but response could not be parsed: ' + res.responseText.slice(0, 300));
         }
-        const origin = new URL(SP_SITE_URL).origin;
+        const origin = new URL(siteUrl).origin;
         return origin + data.d.ServerRelativeUrl;
     }
 
@@ -163,10 +256,17 @@
         event.stopImmediatePropagation();
 
         const file = imageItem.getAsFile();
+
+        const config = await getConfig();
+        if (!config) {
+            notify('Upload cancelled — SharePoint site/folder not configured.');
+            return;
+        }
+
         notify('Uploading pasted image to SharePoint…');
 
         try {
-            const url = await uploadImageToSharePoint(file);
+            const url = await uploadImageToSharePoint(file, config.siteUrl, config.folderUrl);
             insertImageViaCkEditor(target, url);
             notify('Image uploaded and inserted.');
             console.log('[SP Uploader] Uploaded URL:', url);
