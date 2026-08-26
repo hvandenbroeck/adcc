@@ -6,11 +6,10 @@
 // @match        https://rallydev.com/*
 // @match        https://*.rallydev.com/*
 // @grant        GM_xmlhttpRequest
-// @grant        GM_notification
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_registerMenuCommand
-// @connect      sharepoint.com
+// @connect       sharepoint.com
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -191,11 +190,55 @@
         return origin + data.d.ServerRelativeUrl;
     }
 
-    function notify(message) {
-        console.log('[SP Uploader]', message);
-        if (typeof GM_notification === 'function') {
-            GM_notification({ text: message, title: 'SharePoint Uploader', timeout: 3000 });
+    // ---------- Subtle in-page toast (bottom-right, auto-fades) ----------
+    let toastEl = null;
+    let toastHideTimer = null;
+
+    function ensureToastEl() {
+        if (toastEl) return toastEl;
+        toastEl = document.createElement('div');
+        toastEl.style.cssText =
+            'position:fixed;bottom:20px;right:20px;z-index:2147483647;' +
+            'padding:10px 16px;border-radius:6px;font-family:sans-serif;font-size:13px;' +
+            'box-shadow:0 4px 16px rgba(0,0,0,0.25);opacity:0;transform:translateY(8px);' +
+            'transition:opacity 0.2s ease,transform 0.2s ease;pointer-events:none;max-width:320px;';
+        document.body.appendChild(toastEl);
+        return toastEl;
+    }
+
+    const TOAST_COLORS = {
+        progress: { bg: '#323232', fg: '#fff' },
+        success: { bg: '#1e7e34', fg: '#fff' },
+        error: { bg: '#b02a2a', fg: '#fff' }
+    };
+
+    function showToast(message, kind) {
+        const el = ensureToastEl();
+        const c = TOAST_COLORS[kind] || TOAST_COLORS.progress;
+        el.style.background = c.bg;
+        el.style.color = c.fg;
+        el.textContent = message;
+
+        clearTimeout(toastHideTimer);
+        requestAnimationFrame(() => {
+            el.style.opacity = '1';
+            el.style.transform = 'translateY(0)';
+        });
+
+        // 'progress' toasts stay put until the next call updates/replaces them (we don't know
+        // how long the upload will take); success/error toasts fade themselves out.
+        if (kind !== 'progress') {
+            const hideAfter = kind === 'error' ? 4000 : 2500;
+            toastHideTimer = setTimeout(() => {
+                el.style.opacity = '0';
+                el.style.transform = 'translateY(8px)';
+            }, hideAfter);
         }
+    }
+
+    function notify(message, kind) {
+        console.log('[SP Uploader]', message);
+        showToast(message, kind || 'progress');
     }
 
     // ---------- Insert via CKEditor 5's own command API ----------
@@ -259,20 +302,20 @@
 
         const config = await getConfig();
         if (!config) {
-            notify('Upload cancelled — SharePoint site/folder not configured.');
+            notify('Upload cancelled — SharePoint not configured.', 'error');
             return;
         }
 
-        notify('Uploading pasted image to SharePoint…');
+        notify('Uploading pasted image to SharePoint…', 'progress');
 
         try {
             const url = await uploadImageToSharePoint(file, config.siteUrl, config.folderUrl);
             insertImageViaCkEditor(target, url);
-            notify('Image uploaded and inserted.');
+            notify('Image uploaded and inserted.', 'success');
             console.log('[SP Uploader] Uploaded URL:', url);
         } catch (err) {
             console.error('[SP Uploader] Failed:', err);
-            notify('Failed — see console for details.');
+            notify('Failed — see console for details.', 'error');
         }
     }
 
