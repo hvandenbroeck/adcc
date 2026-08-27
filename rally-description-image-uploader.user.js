@@ -163,9 +163,40 @@
         return data.d.GetContextWebInformation.FormDigestValue;
     }
 
+    // Cached per site so we only hit the API once per session, not on every paste.
+    const currentUserCache = {};
+
+    function sanitizeForFilename(str) {
+        return str.replace(/[^a-zA-Z0-9._-]/g, '_');
+    }
+
+    async function getCurrentUserName(siteUrl) {
+        if (currentUserCache[siteUrl]) return currentUserCache[siteUrl];
+
+        try {
+            const res = await gmRequest({
+                method: 'GET',
+                url: `${siteUrl}/_api/web/currentuser?$select=Title,Email,LoginName`,
+                headers: { Accept: 'application/json;odata=verbose' }
+            });
+            const data = JSON.parse(res.responseText);
+            const info = data.d;
+            const raw = info.Email || info.Title || info.LoginName || 'unknown';
+            const username = sanitizeForFilename(raw.split('@')[0]);
+            currentUserCache[siteUrl] = username;
+            return username;
+        } catch (e) {
+            console.warn('[SP Uploader] Could not determine current user, falling back to "unknown":', e);
+            return 'unknown';
+        }
+    }
+
     async function uploadImageToSharePoint(file, siteUrl, folderUrl, fileName) {
-        const name = fileName || `pasted-${Date.now()}.png`;
-        const digest = await getRequestDigest(siteUrl);
+        const [digest, username] = await Promise.all([
+            getRequestDigest(siteUrl),
+            getCurrentUserName(siteUrl)
+        ]);
+        const name = fileName || `pasted-${username}-${Date.now()}.png`;
         const uploadUrl =
             `${siteUrl}/_api/web/GetFolderByServerRelativeUrl('${encodeURIComponent(folderUrl)}')` +
             `/Files/add(url='${encodeURIComponent(name)}',overwrite=true)`;
